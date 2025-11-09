@@ -1,5 +1,7 @@
 """Audio generation and playback engine for vocal moaning sounds."""
 import numpy as np
+import soundfile as sf
+import librosa
 import pyaudio
 from threading import Thread, Event
 import time
@@ -27,10 +29,15 @@ class AudioEngine:
         self.stop_event = Event()
         self.playback_thread = None
 
+        # Audio source
+        self.audio_data = None  # Loaded WAV file data
+        self.use_file_mode = False  # True if using WAV file, False if synthesizing
+
         # Audio parameters (controlled by UI)
         self.volume = 1.0
         self.pitch_shift = 0.0  # in semitones
         self.octave_shift = 0  # -2 to +2
+        self.word_frequency = 0.3  # 0.0 to 1.0 (controls how often words are spoken)
 
         # Base frequency range for moaning (typical female vocal range)
         self.base_freq_min = 180  # Hz
@@ -71,6 +78,32 @@ class AudioEngine:
         # Waveform buffer for visualization
         self.waveform_buffer = np.zeros(1000)
 
+    def load_audio_file(self, file_path):
+        """Load a WAV file to use as the audio source."""
+        try:
+            data, sr = sf.read(file_path)
+            # Resample if necessary
+            if sr != self.sample_rate:
+                data = librosa.resample(data, orig_sr=sr, target_sr=self.sample_rate)
+
+            # Convert to mono if stereo
+            if len(data.shape) > 1:
+                data = np.mean(data, axis=1)
+
+            self.audio_data = data
+            self.use_file_mode = True
+            print(f"Loaded audio file: {file_path}")
+            return True
+        except Exception as e:
+            print(f"Error loading audio file: {e}")
+            return False
+
+    def unload_audio_file(self):
+        """Unload the current audio file and switch to synthesis mode."""
+        self.audio_data = None
+        self.use_file_mode = False
+        print("Switched to synthesis mode")
+
     def start_playback(self):
         """Start audio generation and playback."""
         if self.is_playing:
@@ -110,6 +143,7 @@ class AudioEngine:
         )
 
         chunk_duration = CHUNK_SIZE / self.sample_rate  # Duration of each chunk in seconds
+        position = 0  # Position in audio file (for file mode)
 
         while self.is_playing and not self.stop_event.is_set():
             current_time = time.time()
@@ -118,26 +152,21 @@ class AudioEngine:
             if current_time >= self.next_event_time:
                 self.trigger_random_event()
 
-            # Check if we should speak a word
-            if current_time >= self.next_word_time and random.random() < 0.3:
+            # Check if we should speak a word (based on word frequency)
+            if current_time >= self.next_word_time and random.random() < self.word_frequency:
                 self._trigger_word()
 
-            # Get current synthesis parameters based on state
-            params = self._get_synthesis_parameters()
+            if self.use_file_mode and self.audio_data is not None:
+                # FILE MODE: Use loaded WAV file with effects
+                chunk = self._generate_from_file(position)
+                position += len(chunk)
 
-            # Update vowel transition
-            self._update_vowel_transition()
-
-            # Generate audio chunk
-            chunk = self.vocal_synth.generate_chunk(
-                duration=chunk_duration,
-                base_freq=params['base_freq'],
-                vowel=self.current_vowel,
-                breathiness=params['breathiness'],
-                intensity=params['intensity'],
-                vibrato_rate=params['vibrato_rate'],
-                vibrato_depth=params['vibrato_depth']
-            )
+                # Loop audio if we reach the end
+                if position >= len(self.audio_data):
+                    position = 0
+            else:
+                # SYNTHESIS MODE: Generate audio from scratch
+                chunk = self._generate_from_synthesis(chunk_duration)
 
             # Apply volume
             chunk = chunk * self.volume
@@ -160,6 +189,69 @@ class AudioEngine:
             self.stream.stop_stream()
             self.stream.close()
             self.stream = None
+
+    def _generate_from_file(self, position):
+        """Generate audio chunk from loaded file with effects."""
+        # Get chunk from file
+        end_pos = min(position + CHUNK_SIZE, len(self.audio_data))
+        chunk = self.audio_data[position:end_pos].copy()
+
+        if len(chunk) == 0:
+            return np.zeros(CHUNK_SIZE, dtype=np.float32)
+
+        # Get state parameters for modulation
+        params = self._get_synthesis_parameters()
+
+        # Apply state-based intensity modulation
+        chunk = chunk * params['intensity']
+
+        # Apply pitch shifting
+        total_pitch_shift = self.pitch_shift + (self.octave_shift * 12)
+
+        # Add state-based pitch variation
+        if self.current_state == "climax":
+            total_pitch_shift += 2.0  # Higher during climax
+        elif self.current_state == "building":
+            progress = (time.time() - self.state_start_time) / MAX_BUILD_UP_DURATION
+            total_pitch_shift += progress * 2.0  # Gradually increase
+
+        if total_pitch_shift != 0:
+            try:
+                chunk = librosa.effects.pitch_shift(
+                    chunk,
+                    sr=self.sample_rate,
+                    n_steps=total_pitch_shift
+                )
+            except:
+                pass  # Skip pitch shift if it fails
+
+        # Add slight breathiness during intense states
+        if self.current_state in ["building", "climax"]:
+            noise = np.random.normal(0, params['breathiness'] * 0.1, len(chunk))
+            chunk = chunk + noise
+
+        return chunk
+
+    def _generate_from_synthesis(self, chunk_duration):
+        """Generate audio chunk from synthesis."""
+        # Get current synthesis parameters based on state
+        params = self._get_synthesis_parameters()
+
+        # Update vowel transition
+        self._update_vowel_transition()
+
+        # Generate audio chunk
+        chunk = self.vocal_synth.generate_chunk(
+            duration=chunk_duration,
+            base_freq=params['base_freq'],
+            vowel=self.current_vowel,
+            breathiness=params['breathiness'],
+            intensity=params['intensity'],
+            vibrato_rate=params['vibrato_rate'],
+            vibrato_depth=params['vibrato_depth']
+        )
+
+        return chunk
 
     def _get_synthesis_parameters(self):
         """
@@ -244,7 +336,14 @@ class AudioEngine:
 
     def schedule_next_word(self):
         """Schedule the next word/phrase utterance."""
-        delay = random.uniform(20, 45)  # Speak every 20-45 seconds
+        if self.word_frequency <= 0.01:
+            # If frequency is very low, schedule far in the future
+            delay = 9999
+        else:
+            # Base delay inversely proportional to frequency
+            # word_frequency 0.0-1.0 maps to 60-10 seconds
+            base_delay = 60 - (self.word_frequency * 50)
+            delay = random.uniform(base_delay * 0.7, base_delay * 1.3)
         self.next_word_time = time.time() + delay
 
     def trigger_random_event(self):
@@ -348,6 +447,11 @@ class AudioEngine:
 
     def get_waveform_data(self, num_points=1000):
         """Get waveform data for visualization."""
+        if self.use_file_mode and self.audio_data is not None and not self.is_playing:
+            # Show loaded file waveform when not playing
+            step = max(1, len(self.audio_data) // num_points)
+            return self.audio_data[::step][:num_points]
+
         if len(self.waveform_buffer) == 0:
             return np.zeros(num_points)
 

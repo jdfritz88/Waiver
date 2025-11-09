@@ -46,16 +46,36 @@ class AudioStreamUI:
         )
         title_label.grid(row=0, column=0, pady=(0, 10))
 
-        # Info label
-        info_label = ttk.Label(
-            main_frame,
-            text="Real-time vocal synthesis with AI-powered dynamics",
-            font=("Arial", 10, "italic")
+        # File selection section
+        file_frame = ttk.LabelFrame(main_frame, text="Audio Source", padding="10")
+        file_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        file_frame.columnconfigure(0, weight=1)
+
+        self.file_label = ttk.Label(file_frame, text="No file loaded - using synthesis mode")
+        self.file_label.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+
+        button_frame = ttk.Frame(file_frame)
+        button_frame.grid(row=1, column=0, sticky=(tk.W, tk.E))
+        button_frame.columnconfigure(0, weight=1)
+        button_frame.columnconfigure(1, weight=1)
+
+        select_btn = ttk.Button(
+            button_frame,
+            text="Select WAV File",
+            command=self._select_file
         )
-        info_label.grid(row=1, column=0, pady=(0, 10))
+        select_btn.grid(row=0, column=0, padx=(0, 5), sticky=(tk.W, tk.E))
+
+        self.clear_btn = ttk.Button(
+            button_frame,
+            text="Clear (Use Synthesis)",
+            command=self._clear_file,
+            state=tk.DISABLED
+        )
+        self.clear_btn.grid(row=0, column=1, padx=(5, 0), sticky=(tk.W, tk.E))
 
         # Waveform visualization
-        waveform_frame = ttk.LabelFrame(main_frame, text="Live Waveform", padding="10")
+        waveform_frame = ttk.LabelFrame(main_frame, text="Waveform", padding="10")
         waveform_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
         main_frame.rowconfigure(2, weight=1)
 
@@ -108,6 +128,20 @@ class AudioStreamUI:
         self.octave_value = ttk.Label(controls_frame, text="0")
         self.octave_value.grid(row=2, column=2, padx=(10, 0), pady=5)
 
+        # Word frequency slider
+        ttk.Label(controls_frame, text="Words:").grid(row=3, column=0, sticky=tk.W, pady=5)
+        self.word_freq_slider = ttk.Scale(
+            controls_frame,
+            from_=0.0,
+            to=1.0,
+            orient=tk.HORIZONTAL,
+            command=self._on_word_freq_change
+        )
+        self.word_freq_slider.set(0.3)
+        self.word_freq_slider.grid(row=3, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=5)
+        self.word_freq_value = ttk.Label(controls_frame, text="30%")
+        self.word_freq_value.grid(row=3, column=2, padx=(10, 0), pady=5)
+
         # Playback controls
         playback_frame = ttk.LabelFrame(main_frame, text="Playback", padding="10")
         playback_frame.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
@@ -146,7 +180,7 @@ class AudioStreamUI:
         # Status bar
         self.status_label = ttk.Label(
             main_frame,
-            text="Ready - Click 'Start Stream' to begin generating audio",
+            text="Ready - Select a WAV file or use synthesis mode",
             relief=tk.SUNKEN,
             anchor=tk.W
         )
@@ -186,6 +220,34 @@ class AudioStreamUI:
 
             self.canvas.draw()
 
+    def _select_file(self):
+        """Handle file selection."""
+        file_path = filedialog.askopenfilename(
+            title="Select Audio File",
+            filetypes=[("WAV files", "*.wav"), ("All files", "*.*")]
+        )
+
+        if file_path:
+            if self.audio_engine.load_audio_file(file_path):
+                self.current_file = file_path
+                filename = file_path.split('/')[-1].split('\\')[-1]  # Handle both / and \
+                self.file_label.config(text=f"Loaded: {filename}")
+                self._update_waveform()
+                self.clear_btn.config(state=tk.NORMAL)
+                self.status_label.config(text="Audio file loaded - ready to stream")
+            else:
+                messagebox.showerror("Error", "Failed to load audio file")
+                self.status_label.config(text="Error loading file")
+
+    def _clear_file(self):
+        """Clear the loaded file and switch to synthesis mode."""
+        self.audio_engine.unload_audio_file()
+        self.current_file = None
+        self.file_label.config(text="No file loaded - using synthesis mode")
+        self.clear_btn.config(state=tk.DISABLED)
+        self._update_waveform()
+        self.status_label.config(text="Switched to synthesis mode")
+
     def _start_waveform_updates(self):
         """Start updating the waveform display periodically."""
         if self.is_streaming:
@@ -210,6 +272,15 @@ class AudioStreamUI:
         octave = int(float(value))
         self.audio_engine.octave_shift = octave
         self.octave_value.config(text=f"{octave:+d}")
+
+    def _on_word_freq_change(self, value):
+        """Handle word frequency slider change."""
+        freq = float(value)
+        self.audio_engine.word_frequency = freq
+        if freq < 0.01:
+            self.word_freq_value.config(text="Off")
+        else:
+            self.word_freq_value.config(text=f"{int(freq * 100)}%")
 
     def _toggle_stream(self):
         """Toggle streaming on/off."""
