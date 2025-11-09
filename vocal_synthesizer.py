@@ -9,6 +9,7 @@ class VocalSynthesizer:
 
     # Formant frequencies for different vowel sounds (F1, F2, F3 in Hz)
     # These create different vocal timbres
+    # These are BASE formants that will be shifted based on voice profile
     VOWEL_FORMANTS = {
         'ah': (700, 1220, 2600),   # Open mouth sound
         'oh': (570, 840, 2410),     # Rounded sound
@@ -17,10 +18,19 @@ class VocalSynthesizer:
         'aa': (850, 1610, 2850),    # Very open sound
     }
 
-    def __init__(self, sample_rate=44100):
+    def __init__(self, sample_rate=44100, voice_profile=None):
         """Initialize the vocal synthesizer."""
         self.sample_rate = sample_rate
         self.phase = 0.0  # Phase accumulator for continuous pitch
+        self.voice_profile = voice_profile  # Voice characteristics from analyzer
+
+        # Calculate formant shift ratio if we have a voice profile
+        if voice_profile and 'formants' in voice_profile:
+            # Shift all formants proportionally to match the voice
+            # Use ratio of voice F1 to standard female F1 (700 Hz)
+            self.formant_shift_ratio = voice_profile['formants'][0] / 700.0
+        else:
+            self.formant_shift_ratio = 1.0
 
     def generate_chunk(self, duration, base_freq, vowel='ah', breathiness=0.3,
                       intensity=1.0, vibrato_rate=5.0, vibrato_depth=0.5):
@@ -101,11 +111,15 @@ class VocalSynthesizer:
         Apply formant filtering to create vowel sounds.
 
         Formants are resonant frequencies of the vocal tract.
+        Uses voice profile to adjust formants to match the loaded voice.
         """
         filtered = source.copy()
 
+        # Shift formants based on voice profile
+        shifted_formants = tuple(f * self.formant_shift_ratio for f in formants[:3])
+
         # Apply bandpass filters for each formant
-        for i, formant_freq in enumerate(formants[:2]):  # Use first 2 formants
+        for i, formant_freq in enumerate(shifted_formants):
             # Bandwidth increases with formant number
             bandwidth = 50 + i * 30
 

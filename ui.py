@@ -48,29 +48,33 @@ class AudioStreamUI:
         )
         title_label.grid(row=0, column=0, pady=(0, 10))
 
-        # File selection section
-        file_frame = ttk.LabelFrame(main_frame, text="Audio Source", padding="10")
+        # Voice Profile Selection
+        file_frame = ttk.LabelFrame(main_frame, text="Voice Profile", padding="10")
         file_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         file_frame.columnconfigure(0, weight=1)
 
-        self.file_label = ttk.Label(file_frame, text="No file loaded - using synthesis mode")
-        self.file_label.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        info_text = "Load a WAV file to analyze the voice characteristics.\nThe app will synthesize new sounds using that voice."
+        info_label = ttk.Label(file_frame, text=info_text, font=("Arial", 8), foreground="gray")
+        info_label.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+
+        self.file_label = ttk.Label(file_frame, text="No voice loaded - using default voice")
+        self.file_label.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
 
         button_frame = ttk.Frame(file_frame)
-        button_frame.grid(row=1, column=0, sticky=(tk.W, tk.E))
+        button_frame.grid(row=2, column=0, sticky=(tk.W, tk.E))
         button_frame.columnconfigure(0, weight=1)
         button_frame.columnconfigure(1, weight=1)
 
         select_btn = ttk.Button(
             button_frame,
-            text="Select WAV File",
+            text="Load Voice from WAV",
             command=self._select_file
         )
         select_btn.grid(row=0, column=0, padx=(0, 5), sticky=(tk.W, tk.E))
 
         self.clear_btn = ttk.Button(
             button_frame,
-            text="Clear (Use Synthesis)",
+            text="Use Default Voice",
             command=self._clear_file,
             state=tk.DISABLED
         )
@@ -211,7 +215,7 @@ class AudioStreamUI:
         # Status bar
         self.status_label = ttk.Label(
             main_frame,
-            text="Ready - Select a WAV file or use synthesis mode",
+            text="Ready - Load a voice profile or use default voice",
             relief=tk.SUNKEN,
             anchor=tk.W
         )
@@ -252,32 +256,38 @@ class AudioStreamUI:
             self.canvas.draw()
 
     def _select_file(self):
-        """Handle file selection."""
+        """Handle voice file selection and analysis."""
         file_path = filedialog.askopenfilename(
-            title="Select Audio File",
+            title="Select Voice Sample (WAV File)",
             filetypes=[("WAV files", "*.wav"), ("All files", "*.*")]
         )
 
         if file_path:
+            self.status_label.config(text="Analyzing voice... please wait")
+            self.root.update()  # Force UI update
+
             if self.audio_engine.load_audio_file(file_path):
                 self.current_file = file_path
                 filename = file_path.split('/')[-1].split('\\')[-1]  # Handle both / and \
-                self.file_label.config(text=f"Loaded: {filename}")
-                self._update_waveform()
+                self.file_label.config(text=f"Voice Profile: {filename}")
                 self.clear_btn.config(state=tk.NORMAL)
-                self.status_label.config(text="Audio file loaded - ready to stream")
+                self.status_label.config(text="Voice analyzed - ready to generate!")
+                messagebox.showinfo(
+                    "Voice Loaded",
+                    f"Voice profile loaded from {filename}\n\n"
+                    "The app will now synthesize sounds using this voice's characteristics."
+                )
             else:
-                messagebox.showerror("Error", "Failed to load audio file")
-                self.status_label.config(text="Error loading file")
+                messagebox.showerror("Error", "Failed to analyze voice from file")
+                self.status_label.config(text="Error analyzing voice")
 
     def _clear_file(self):
-        """Clear the loaded file and switch to synthesis mode."""
+        """Clear the voice profile and use default voice."""
         self.audio_engine.unload_audio_file()
         self.current_file = None
-        self.file_label.config(text="No file loaded - using synthesis mode")
+        self.file_label.config(text="No voice loaded - using default voice")
         self.clear_btn.config(state=tk.DISABLED)
-        self._update_waveform()
-        self.status_label.config(text="Switched to synthesis mode")
+        self.status_label.config(text="Using default voice synthesis")
 
     def _start_waveform_updates(self):
         """Start updating the waveform display periodically."""

@@ -10,6 +10,7 @@ import pyttsx3
 from io import BytesIO
 import wave
 from vocal_synthesizer import VocalSynthesizer
+from voice_analyzer import VoiceAnalyzer
 from config import (
     SAMPLE_RATE, CHUNK_SIZE, MIN_BUILD_UP_DURATION,
     MAX_BUILD_UP_DURATION, CLIMAX_DURATION,
@@ -23,15 +24,16 @@ class AudioEngine:
     def __init__(self, mistral_client=None):
         """Initialize the audio engine."""
         self.mistral_client = mistral_client
+        self.voice_analyzer = VoiceAnalyzer()
         self.vocal_synth = VocalSynthesizer(sample_rate=SAMPLE_RATE)
         self.sample_rate = SAMPLE_RATE
         self.is_playing = False
         self.stop_event = Event()
         self.playback_thread = None
 
-        # Audio source
-        self.audio_data = None  # Loaded WAV file data
-        self.use_file_mode = False  # True if using WAV file, False if synthesizing
+        # Voice profile from analyzed WAV file
+        self.voice_profile = None
+        self.loaded_file_name = None
 
         # Audio parameters (controlled by UI)
         self.volume = 1.0
@@ -90,30 +92,64 @@ class AudioEngine:
         self.waveform_buffer = np.zeros(1000)
 
     def load_audio_file(self, file_path):
-        """Load a WAV file to use as the audio source."""
+        """
+        Analyze a WAV file and extract voice characteristics.
+        The app will synthesize new sounds using these characteristics.
+        """
         try:
-            data, sr = sf.read(file_path)
-            # Resample if necessary
-            if sr != self.sample_rate:
-                data = librosa.resample(data, orig_sr=sr, target_sr=self.sample_rate)
+            print(f"Analyzing voice from: {file_path}")
+            print("This may take a moment...")
 
-            # Convert to mono if stereo
-            if len(data.shape) > 1:
-                data = np.mean(data, axis=1)
+            # Analyze the voice
+            self.voice_profile = self.voice_analyzer.analyze_voice(file_path, self.sample_rate)
 
-            self.audio_data = data
-            self.use_file_mode = True
-            print(f"Loaded audio file: {file_path}")
-            return True
+            # Get synthesis parameters
+            synth_params = self.voice_analyzer.get_synthesis_params()
+
+            if synth_params:
+                print(f"Voice Analysis Complete:")
+                print(f"  - Base Pitch: {synth_params['base_freq']:.1f} Hz")
+                print(f"  - Pitch Range: {synth_params['freq_range'][0]:.1f} - {synth_params['freq_range'][1]:.1f} Hz")
+                print(f"  - Formants (F1,F2,F3): {[f'{f:.0f}' for f in synth_params['formants']]}")
+                print(f"  - Breathiness: {synth_params['breathiness_factor']:.2f}")
+
+                # Update base frequency range from voice
+                self.base_freq_min = synth_params['freq_range'][0]
+                self.base_freq_max = synth_params['freq_range'][1]
+
+                # Create new synthesizer with voice profile
+                self.vocal_synth = VocalSynthesizer(
+                    sample_rate=self.sample_rate,
+                    voice_profile=synth_params
+                )
+
+                self.loaded_file_name = file_path.split('/')[-1].split('\\')[-1]
+                print(f"Voice profile loaded successfully!")
+                print("App will now generate sounds using this voice.")
+                return True
+            else:
+                print("Could not extract voice parameters")
+                return False
+
         except Exception as e:
-            print(f"Error loading audio file: {e}")
+            print(f"Error analyzing audio file: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def unload_audio_file(self):
-        """Unload the current audio file and switch to synthesis mode."""
-        self.audio_data = None
-        self.use_file_mode = False
-        print("Switched to synthesis mode")
+        """Unload the voice profile and use default synthesis."""
+        self.voice_profile = None
+        self.loaded_file_name = None
+
+        # Reset to default synthesizer
+        self.vocal_synth = VocalSynthesizer(sample_rate=self.sample_rate)
+
+        # Reset frequency range to defaults
+        self.base_freq_min = 180
+        self.base_freq_max = 350
+
+        print("Switched to default synthesis mode")
 
     def start_playback(self):
         """Start audio generation and playback."""
@@ -167,17 +203,9 @@ class AudioEngine:
             if current_time >= self.next_word_time and random.random() < self.word_frequency:
                 self._trigger_word()
 
-            if self.use_file_mode and self.audio_data is not None:
-                # FILE MODE: Use loaded WAV file with effects
-                chunk = self._generate_from_file(position)
-                position += len(chunk)
-
-                # Loop audio if we reach the end
-                if position >= len(self.audio_data):
-                    position = 0
-            else:
-                # SYNTHESIS MODE: Generate audio from scratch
-                chunk = self._generate_from_synthesis(chunk_duration)
+            # ALWAYS SYNTHESIZE - never playback
+            # Voice characteristics are baked into the synthesizer
+            chunk = self._generate_from_synthesis(chunk_duration)
 
             # Apply volume
             chunk = chunk * self.volume
@@ -204,50 +232,6 @@ class AudioEngine:
             self.stream.stop_stream()
             self.stream.close()
             self.stream = None
-
-    def _generate_from_file(self, position):
-        """Generate audio chunk from loaded file with effects."""
-        # Get chunk from file
-        end_pos = min(position + CHUNK_SIZE, len(self.audio_data))
-        chunk = self.audio_data[position:end_pos].copy()
-
-        if len(chunk) == 0:
-            return np.zeros(CHUNK_SIZE, dtype=np.float32)
-
-        # Get state parameters for modulation
-        params = self._get_synthesis_parameters()
-
-        # Apply state-based intensity modulation
-        chunk = chunk * params['intensity']
-
-        # Apply pitch shifting
-        total_pitch_shift = self.pitch_shift + (self.octave_shift * 12)
-
-        # Add state-based pitch variation
-        if self.current_state == "climax":
-            total_pitch_shift += 2.0  # Higher during climax
-        elif self.current_state == "building":
-            progress = (time.time() - self.state_start_time) / MAX_BUILD_UP_DURATION
-            total_pitch_shift += progress * 2.0  # Gradually increase
-
-        if total_pitch_shift != 0:
-            try:
-                # Use smaller n_fft to avoid warnings with small chunks
-                chunk = librosa.effects.pitch_shift(
-                    chunk,
-                    sr=self.sample_rate,
-                    n_steps=total_pitch_shift,
-                    n_fft=512  # Smaller FFT size for small chunks
-                )
-            except:
-                pass  # Skip pitch shift if it fails
-
-        # Add slight breathiness during intense states
-        if self.current_state in ["building", "climax"]:
-            noise = np.random.normal(0, params['breathiness'] * 0.1, len(chunk))
-            chunk = chunk + noise
-
-        return chunk
 
     def _generate_from_synthesis(self, chunk_duration):
         """Generate audio chunk from synthesis."""
@@ -480,15 +464,10 @@ class AudioEngine:
 
     def get_waveform_data(self, num_points=1000):
         """Get waveform data for visualization."""
-        if self.use_file_mode and self.audio_data is not None and not self.is_playing:
-            # Show loaded file waveform when not playing
-            step = max(1, len(self.audio_data) // num_points)
-            return self.audio_data[::step][:num_points]
-
         if len(self.waveform_buffer) == 0:
             return np.zeros(num_points)
 
-        # Return the current waveform buffer
+        # Return the current waveform buffer (live generated audio)
         if len(self.waveform_buffer) >= num_points:
             return self.waveform_buffer[-num_points:]
         else:
