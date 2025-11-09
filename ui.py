@@ -41,28 +41,21 @@ class AudioStreamUI:
         # Title
         title_label = ttk.Label(
             main_frame,
-            text="Audio Stream Generator",
+            text="Vocal Sound Generator",
             font=("Arial", 18, "bold")
         )
         title_label.grid(row=0, column=0, pady=(0, 10))
 
-        # File selection section
-        file_frame = ttk.LabelFrame(main_frame, text="Audio File", padding="10")
-        file_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-        file_frame.columnconfigure(0, weight=1)
-
-        self.file_label = ttk.Label(file_frame, text="No file selected")
-        self.file_label.grid(row=0, column=0, sticky=(tk.W, tk.E))
-
-        select_btn = ttk.Button(
-            file_frame,
-            text="Select Audio File",
-            command=self._select_file
+        # Info label
+        info_label = ttk.Label(
+            main_frame,
+            text="Real-time vocal synthesis with AI-powered dynamics",
+            font=("Arial", 10, "italic")
         )
-        select_btn.grid(row=1, column=0, pady=(5, 0))
+        info_label.grid(row=1, column=0, pady=(0, 10))
 
         # Waveform visualization
-        waveform_frame = ttk.LabelFrame(main_frame, text="Waveform", padding="10")
+        waveform_frame = ttk.LabelFrame(main_frame, text="Live Waveform", padding="10")
         waveform_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
         main_frame.rowconfigure(2, weight=1)
 
@@ -153,7 +146,7 @@ class AudioStreamUI:
         # Status bar
         self.status_label = ttk.Label(
             main_frame,
-            text="Ready - Select an audio file to begin",
+            text="Ready - Click 'Start Stream' to begin generating audio",
             relief=tk.SUNKEN,
             anchor=tk.W
         )
@@ -193,23 +186,12 @@ class AudioStreamUI:
 
             self.canvas.draw()
 
-    def _select_file(self):
-        """Handle file selection."""
-        file_path = filedialog.askopenfilename(
-            title="Select Audio File",
-            filetypes=[("WAV files", "*.wav"), ("All files", "*.*")]
-        )
-
-        if file_path:
-            if self.audio_engine.load_audio_file(file_path):
-                self.current_file = file_path
-                filename = file_path.split('/')[-1]
-                self.file_label.config(text=f"Loaded: {filename}")
-                self._update_waveform()
-                self.status_label.config(text="Audio file loaded successfully")
-            else:
-                messagebox.showerror("Error", "Failed to load audio file")
-                self.status_label.config(text="Error loading file")
+    def _start_waveform_updates(self):
+        """Start updating the waveform display periodically."""
+        if self.is_streaming:
+            self._update_waveform()
+            # Schedule next update
+            self.root.after(100, self._start_waveform_updates)  # Update every 100ms
 
     def _on_volume_change(self, value):
         """Handle volume slider change."""
@@ -232,18 +214,15 @@ class AudioStreamUI:
     def _toggle_stream(self):
         """Toggle streaming on/off."""
         if not self.is_streaming:
-            if self.current_file is None:
-                messagebox.showwarning("No File", "Please select an audio file first")
-                return
-
             if self.audio_engine.start_playback():
                 self.is_streaming = True
                 self.start_btn.config(text="Stop Stream")
                 self.buildup_btn.config(state=tk.NORMAL)
                 self.climax_btn.config(state=tk.NORMAL)
-                self.status_label.config(text="Streaming...")
+                self.status_label.config(text="Generating audio stream...")
+                self._start_waveform_updates()  # Start updating waveform
             else:
-                messagebox.showerror("Error", "Failed to start playback")
+                messagebox.showerror("Error", "Failed to start audio generation")
         else:
             self.audio_engine.stop_playback()
             self.is_streaming = False
