@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nInitial commit: Audio Stream Generator with Mistral AI integration\n\n- Audio streaming application with real-time effects\n- Mistral AI integration for dynamic parameter generation\n- Tkinter UI with volume, pitch, and octave sliders\n- Waveform visualization using matplotlib\n- Random and manual build-up/climax triggers\n- Support for WAV file playback with real-time processing\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
