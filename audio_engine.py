@@ -52,8 +52,13 @@ class AudioEngine:
         # Mistral API caching to avoid rate limits
         self.cached_mistral_params = None
         self.last_mistral_call_time = 0
-        self.mistral_cache_duration = 5.0  # Cache for 5 seconds
+        self.mistral_cache_duration = 60.0  # Cache for 60 seconds (default)
         self.last_mistral_state = None
+
+        # Audio recording
+        self.is_recording = False
+        self.recording_buffer = []
+        self.recording_duration = 5.0  # Record for 5 seconds
 
         # Vocalization parameters
         self.current_vowel = 'ah'
@@ -180,6 +185,10 @@ class AudioEngine:
             # Update waveform buffer for visualization
             self.waveform_buffer = np.roll(self.waveform_buffer, -len(chunk))
             self.waveform_buffer[-len(chunk):] = chunk[:min(len(chunk), len(self.waveform_buffer))]
+
+            # If recording, add to recording buffer
+            if self.is_recording:
+                self.recording_buffer.append(chunk.copy())
 
             # Ensure correct format
             chunk = chunk.astype(np.float32)
@@ -487,6 +496,52 @@ class AudioEngine:
             padded = np.zeros(num_points)
             padded[-len(self.waveform_buffer):] = self.waveform_buffer
             return padded
+
+    def start_recording(self):
+        """Start recording audio for the specified duration."""
+        if not self.is_playing:
+            print("Cannot record - stream is not playing")
+            return False
+
+        self.recording_buffer = []
+        self.is_recording = True
+        print(f"Recording started - will capture {self.recording_duration} seconds")
+
+        # Schedule stop recording
+        def stop_after_duration():
+            time.sleep(self.recording_duration)
+            self.stop_recording()
+
+        Thread(target=stop_after_duration, daemon=True).start()
+        return True
+
+    def stop_recording(self):
+        """Stop recording and save to file."""
+        if not self.is_recording:
+            return
+
+        self.is_recording = False
+
+        if len(self.recording_buffer) == 0:
+            print("No audio recorded")
+            return None
+
+        # Combine all chunks
+        recording = np.concatenate(self.recording_buffer)
+
+        # Generate filename with timestamp
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"recording_{timestamp}.wav"
+
+        # Save to file
+        try:
+            sf.write(filename, recording, self.sample_rate)
+            print(f"Recording saved: {filename}")
+            return filename
+        except Exception as e:
+            print(f"Error saving recording: {e}")
+            return None
 
     def cleanup(self):
         """Clean up resources."""

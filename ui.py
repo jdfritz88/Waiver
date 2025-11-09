@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import numpy as np
+import time
+from threading import Thread
 from config import (
     WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT,
     VOLUME_RANGE, PITCH_RANGE, OCTAVE_RANGE
@@ -134,6 +136,18 @@ class AudioStreamUI:
         self.word_freq_value = ttk.Label(controls_frame, text="30%")
         self.word_freq_value.grid(row=3, column=2, padx=(10, 0), pady=5)
 
+        # Mistral cache duration slider
+        ttk.Label(controls_frame, text="AI Cache:").grid(row=4, column=0, sticky=tk.W, pady=5)
+        self.cache_slider = ttk.Scale(
+            controls_frame,
+            from_=10.0,
+            to=60.0,
+            orient=tk.HORIZONTAL
+        )
+        self.cache_slider.grid(row=4, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=5)
+        self.cache_value = ttk.Label(controls_frame, text="60s")
+        self.cache_value.grid(row=4, column=2, padx=(10, 0), pady=5)
+
         # Now configure slider commands and set initial values
         self.volume_slider.config(command=self._on_volume_change)
         self.volume_slider.set(1.0)
@@ -146,6 +160,9 @@ class AudioStreamUI:
 
         self.word_freq_slider.config(command=self._on_word_freq_change)
         self.word_freq_slider.set(0.3)
+
+        self.cache_slider.config(command=self._on_cache_change)
+        self.cache_slider.set(60.0)
 
         # Playback controls
         playback_frame = ttk.LabelFrame(main_frame, text="Playback", padding="10")
@@ -165,6 +182,7 @@ class AudioStreamUI:
         trigger_frame.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         trigger_frame.columnconfigure(0, weight=1)
         trigger_frame.columnconfigure(1, weight=1)
+        trigger_frame.columnconfigure(2, weight=1)
 
         self.buildup_btn = ttk.Button(
             trigger_frame,
@@ -180,7 +198,15 @@ class AudioStreamUI:
             command=self._trigger_climax,
             state=tk.DISABLED
         )
-        self.climax_btn.grid(row=0, column=1, padx=(5, 0), sticky=(tk.W, tk.E))
+        self.climax_btn.grid(row=0, column=1, padx=(5, 5), sticky=(tk.W, tk.E))
+
+        self.record_btn = ttk.Button(
+            trigger_frame,
+            text="Record 5 Sec",
+            command=self._record_audio,
+            state=tk.DISABLED
+        )
+        self.record_btn.grid(row=0, column=2, padx=(5, 0), sticky=(tk.W, tk.E))
 
         # Status bar
         self.status_label = ttk.Label(
@@ -287,6 +313,12 @@ class AudioStreamUI:
         else:
             self.word_freq_value.config(text=f"{int(freq * 100)}%")
 
+    def _on_cache_change(self, value):
+        """Handle Mistral cache duration slider change."""
+        duration = float(value)
+        self.audio_engine.mistral_cache_duration = duration
+        self.cache_value.config(text=f"{int(duration)}s")
+
     def _toggle_stream(self):
         """Toggle streaming on/off."""
         if not self.is_streaming:
@@ -295,6 +327,7 @@ class AudioStreamUI:
                 self.start_btn.config(text="Stop Stream")
                 self.buildup_btn.config(state=tk.NORMAL)
                 self.climax_btn.config(state=tk.NORMAL)
+                self.record_btn.config(state=tk.NORMAL)
                 self.status_label.config(text="Generating audio stream...")
                 self._start_waveform_updates()  # Start updating waveform
             else:
@@ -305,6 +338,7 @@ class AudioStreamUI:
             self.start_btn.config(text="Start Stream")
             self.buildup_btn.config(state=tk.DISABLED)
             self.climax_btn.config(state=tk.DISABLED)
+            self.record_btn.config(state=tk.DISABLED)
             self.status_label.config(text="Stopped")
 
     def _trigger_buildup(self):
@@ -316,6 +350,25 @@ class AudioStreamUI:
         """Trigger manual climax."""
         self.audio_engine.trigger_climax_manual()
         self.status_label.config(text="Climax triggered")
+
+    def _record_audio(self):
+        """Record 5 seconds of audio."""
+        if self.audio_engine.start_recording():
+            self.record_btn.config(state=tk.DISABLED, text="Recording...")
+            self.status_label.config(text="Recording 5 seconds...")
+
+            # Re-enable button after recording completes
+            def enable_button():
+                time.sleep(self.audio_engine.recording_duration + 0.5)
+                self.root.after(0, lambda: self._recording_complete())
+
+            Thread(target=enable_button, daemon=True).start()
+
+    def _recording_complete(self):
+        """Called when recording is complete."""
+        self.record_btn.config(state=tk.NORMAL, text="Record 5 Sec")
+        self.status_label.config(text="Recording saved!")
+        messagebox.showinfo("Recording Saved", "5 second audio clip saved to file!")
 
     def run(self):
         """Start the UI main loop."""
