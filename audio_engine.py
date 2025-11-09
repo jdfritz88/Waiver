@@ -49,6 +49,12 @@ class AudioEngine:
         self.next_event_time = 0
         self.next_word_time = 0
 
+        # Mistral API caching to avoid rate limits
+        self.cached_mistral_params = None
+        self.last_mistral_call_time = 0
+        self.mistral_cache_duration = 5.0  # Cache for 5 seconds
+        self.last_mistral_state = None
+
         # Vocalization parameters
         self.current_vowel = 'ah'
         self.target_vowel = 'oh'
@@ -267,14 +273,27 @@ class AudioEngine:
         pitch_mult = 2 ** ((self.pitch_shift + self.octave_shift * 12) / 12.0)
         base_freq = base_freq * pitch_mult
 
-        # Get state-specific parameters from Mistral or use defaults
+        # Get state-specific parameters from Mistral (with caching to avoid rate limits)
+        mistral_params = None
         if self.mistral_client:
-            try:
-                mistral_params = self.mistral_client.generate_intensity_parameters(self.current_state)
-            except:
-                mistral_params = None
-        else:
-            mistral_params = None
+            current_time = time.time()
+            # Only call API if cache expired OR state changed
+            if (self.cached_mistral_params is None or
+                current_time - self.last_mistral_call_time > self.mistral_cache_duration or
+                self.last_mistral_state != self.current_state):
+                try:
+                    mistral_params = self.mistral_client.generate_intensity_parameters(self.current_state)
+                    # Cache the results
+                    self.cached_mistral_params = mistral_params
+                    self.last_mistral_call_time = current_time
+                    self.last_mistral_state = self.current_state
+                    print(f"[Mistral API] Called for state '{self.current_state}'")
+                except Exception as e:
+                    print(f"[Mistral API] Error: {e}")
+                    mistral_params = self.cached_mistral_params  # Use cached value
+            else:
+                # Use cached value
+                mistral_params = self.cached_mistral_params
 
         # Default parameters based on state
         if self.current_state == "climax":
@@ -428,13 +447,16 @@ class AudioEngine:
                 Examples: "yes", "oh god", "more", "right there", "don't stop", "oh yes"
                 Respond with just the text, no quotes or explanation."""
 
+                print(f"[Mistral API] Requesting word for state '{self.current_state}'")
                 response = self.mistral_client.client.chat.complete(
                     model="mistral-large-latest",
                     messages=[{"role": "user", "content": prompt}]
                 )
                 word = response.choices[0].message.content.strip().strip('"\'')
+                print(f"[Mistral API] Generated word: '{word}'")
                 return word
-            except:
+            except Exception as e:
+                print(f"[Mistral API] Word generation error: {e}")
                 pass
 
         # Fallback words based on state
