@@ -217,10 +217,12 @@ class AudioEngine:
 
         if total_pitch_shift != 0:
             try:
+                # Use smaller n_fft to avoid warnings with small chunks
                 chunk = librosa.effects.pitch_shift(
                     chunk,
                     sr=self.sample_rate,
-                    n_steps=total_pitch_shift
+                    n_steps=total_pitch_shift,
+                    n_fft=512  # Smaller FFT size for small chunks
                 )
             except:
                 pass  # Skip pitch shift if it fails

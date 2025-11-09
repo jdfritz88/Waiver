@@ -92,10 +92,8 @@ class AudioStreamUI:
             controls_frame,
             from_=VOLUME_RANGE[0],
             to=VOLUME_RANGE[1],
-            orient=tk.HORIZONTAL,
-            command=self._on_volume_change
+            orient=tk.HORIZONTAL
         )
-        self.volume_slider.set(1.0)
         self.volume_slider.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=5)
         self.volume_value = ttk.Label(controls_frame, text="100%")
         self.volume_value.grid(row=0, column=2, padx=(10, 0), pady=5)
@@ -106,10 +104,8 @@ class AudioStreamUI:
             controls_frame,
             from_=PITCH_RANGE[0],
             to=PITCH_RANGE[1],
-            orient=tk.HORIZONTAL,
-            command=self._on_pitch_change
+            orient=tk.HORIZONTAL
         )
-        self.pitch_slider.set(0.0)
         self.pitch_slider.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=5)
         self.pitch_value = ttk.Label(controls_frame, text="0 st")
         self.pitch_value.grid(row=1, column=2, padx=(10, 0), pady=5)
@@ -120,10 +116,8 @@ class AudioStreamUI:
             controls_frame,
             from_=OCTAVE_RANGE[0],
             to=OCTAVE_RANGE[1],
-            orient=tk.HORIZONTAL,
-            command=self._on_octave_change
+            orient=tk.HORIZONTAL
         )
-        self.octave_slider.set(0)
         self.octave_slider.grid(row=2, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=5)
         self.octave_value = ttk.Label(controls_frame, text="0")
         self.octave_value.grid(row=2, column=2, padx=(10, 0), pady=5)
@@ -134,13 +128,24 @@ class AudioStreamUI:
             controls_frame,
             from_=0.0,
             to=1.0,
-            orient=tk.HORIZONTAL,
-            command=self._on_word_freq_change
+            orient=tk.HORIZONTAL
         )
-        self.word_freq_slider.set(0.3)
         self.word_freq_slider.grid(row=3, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=5)
         self.word_freq_value = ttk.Label(controls_frame, text="30%")
         self.word_freq_value.grid(row=3, column=2, padx=(10, 0), pady=5)
+
+        # Now configure slider commands and set initial values
+        self.volume_slider.config(command=self._on_volume_change)
+        self.volume_slider.set(1.0)
+
+        self.pitch_slider.config(command=self._on_pitch_change)
+        self.pitch_slider.set(0.0)
+
+        self.octave_slider.config(command=self._on_octave_change)
+        self.octave_slider.set(0)
+
+        self.word_freq_slider.config(command=self._on_word_freq_change)
+        self.word_freq_slider.set(0.3)
 
         # Playback controls
         playback_frame = ttk.LabelFrame(main_frame, text="Playback", padding="10")
