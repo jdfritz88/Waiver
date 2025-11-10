@@ -174,6 +174,11 @@ class VoiceAnalyzer:
             for j in range(1, i):
                 lambda_val -= a[j] * r[i - j]
             lambda_val -= r[i]
+
+            # Avoid division by zero
+            if abs(e) < 1e-10:
+                break
+
             lambda_val /= e
 
             a[1:i+1] += lambda_val * a[i-1::-1]

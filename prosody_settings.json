@@ -1,0 +1,17 @@
+{
+    "pitch_variation": 10,
+    "tempo": 100,
+    "volume": 100,
+    "pauses": 30,
+    "breathiness": 20,
+    "roughness": 0,
+    "emphasis": 30,
+    "buildup_duration_min": 5,
+    "buildup_duration_max": 15,
+    "orgasm_duration_min": 15,
+    "orgasm_duration_max": 30,
+    "glissando_start_semitones": -13,
+    "glissando_end_semitones": 19,
+    "glissando_curve": "exponential",
+    "breathing_frequency": 3
+}

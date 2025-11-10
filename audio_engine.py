@@ -3,7 +3,7 @@ import numpy as np
 import soundfile as sf
 import librosa
 import pyaudio
-from threading import Thread, Event
+from threading import Thread, Event, Lock
 import time
 import random
 import pyttsx3
@@ -11,6 +11,11 @@ from io import BytesIO
 import wave
 from vocal_synthesizer import VocalSynthesizer
 from voice_analyzer import VoiceAnalyzer
+from xtts_engine import XTTSEngine
+from vocalization_generator import VocalizationGenerator
+from audio_processor import AudioProcessor
+from prosody_settings import ProsodySettings
+from app_state import AppState
 from config import (
     SAMPLE_RATE, CHUNK_SIZE, MIN_BUILD_UP_DURATION,
     MAX_BUILD_UP_DURATION, CLIMAX_DURATION,
@@ -46,10 +51,16 @@ class AudioEngine:
         self.base_freq_max = 350  # Hz
 
         # State management
-        self.current_state = "normal"  # normal, building, climax
+        self.current_state = "normal"  # normal, building, orgasm, post_orgasm_breathing
         self.state_start_time = 0
         self.next_event_time = 0
         self.next_word_time = 0
+        self.add_post_orgasm_breathing = True  # Toggle for post-orgasm breathing
+
+        # Random breathing control
+        self.random_breathing_enabled = True
+        self.last_breath_time = 0
+        self.min_time_between_breaths = 5.0  # At least 5 seconds between random breaths
 
         # Mistral API caching to avoid rate limits
         self.cached_mistral_params = None
@@ -60,7 +71,7 @@ class AudioEngine:
         # Audio recording
         self.is_recording = False
         self.recording_buffer = []
-        self.recording_duration = 5.0  # Record for 5 seconds
+        self.recording_duration = 20.0  # Record for 20 seconds
 
         # Vocalization parameters
         self.current_vowel = 'ah'
@@ -90,6 +101,24 @@ class AudioEngine:
 
         # Waveform buffer for visualization
         self.waveform_buffer = np.zeros(1000)
+
+        # XTTS voice cloning engine
+        self.xtts_engine = XTTSEngine(sample_rate=self.sample_rate)
+
+        # Vocalization generator (creates phonetic text for TTS)
+        self.vocalization_generator = VocalizationGenerator(mistral_client=self.mistral_client)
+
+        # TTS generation buffer (stores last generated audio)
+        self.last_generated_audio = None
+
+        # Audio processor for advanced prosody control
+        self.audio_processor = AudioProcessor(sample_rate=self.sample_rate)
+
+        # Prosody settings manager
+        self.prosody_settings = ProsodySettings()
+
+        # App state persistence (saves last voice file)
+        self.app_state = AppState()
 
     def load_audio_file(self, file_path):
         """
@@ -124,6 +153,14 @@ class AudioEngine:
                 )
 
                 self.loaded_file_name = file_path.split('/')[-1].split('\\')[-1]
+
+                # Also load into XTTS for voice cloning
+                if self.xtts_engine.load_reference_voice(file_path):
+                    print("Voice also loaded into XTTS for TTS generation!")
+
+                # Save to app state for auto-load on next startup
+                self.app_state.set_last_voice_file(file_path)
+
                 print(f"Voice profile loaded successfully!")
                 print("App will now generate sounds using this voice.")
                 return True
@@ -136,6 +173,20 @@ class AudioEngine:
             import traceback
             traceback.print_exc()
             return False
+
+    def auto_load_last_voice_file(self):
+        """
+        Automatically load the last voice file from app state if it exists.
+
+        Returns:
+            tuple: (success, file_path) - success is True if loaded, file_path is the loaded file
+        """
+        if self.app_state.has_last_voice_file():
+            last_file = self.app_state.get_last_voice_file()
+            print(f"Auto-loading last voice file: {last_file}")
+            success = self.load_audio_file(last_file)
+            return (success, last_file if success else None)
+        return (False, None)
 
     def unload_audio_file(self):
         """Unload the voice profile and use default synthesis."""
@@ -152,18 +203,22 @@ class AudioEngine:
         print("Switched to default synthesis mode")
 
     def start_playback(self):
-        """Start audio generation and playback."""
+        """Start XTTS streaming audio generation and playback."""
         if self.is_playing:
             print("Already playing")
+            return False
+
+        # Check if XTTS is available
+        if not self.xtts_engine.is_available():
+            print("ERROR: XTTS not ready - please load a voice file first")
             return False
 
         self.is_playing = True
         self.stop_event.clear()
         self.current_state = "normal"
         self.schedule_next_event()
-        self.schedule_next_word()
 
-        self.playback_thread = Thread(target=self._generation_loop, daemon=True)
+        self.playback_thread = Thread(target=self._xtts_streaming_loop, daemon=True)
         self.playback_thread.start()
         return True
 
@@ -232,6 +287,200 @@ class AudioEngine:
             self.stream.stop_stream()
             self.stream.close()
             self.stream = None
+
+    def _xtts_streaming_loop(self):
+        """Main XTTS streaming loop - generates and plays audio continuously with thread-safe buffering."""
+        print("\n=== Starting XTTS Streaming Mode ===")
+        print(f"Initial state: {self.current_state}")
+
+        # Open audio stream for playback
+        self.stream = self.p.open(
+            format=pyaudio.paFloat32,
+            channels=1,
+            rate=self.sample_rate,
+            output=True,
+            frames_per_buffer=CHUNK_SIZE
+        )
+
+        # Clip duration depends on state
+        base_clip_duration = 4.0  # Normal clips are 4 seconds
+
+        # Thread-safe double buffering using a lock
+        next_clip = None
+        clip_lock = Lock()
+
+        def generate_next_clip_async():
+            """Generate the next audio clip in background thread with thread safety."""
+            nonlocal next_clip
+
+            current_time = time.time()
+
+            # Check if we need to trigger a state transition
+            if current_time >= self.next_event_time:
+                self.trigger_random_event()
+
+            # Adjust clip duration based on state
+            if self.current_state == "building":
+                clip_duration = self.prosody_settings.get('buildup_duration_min', 5)
+            elif self.current_state == "orgasm":
+                clip_duration = self.prosody_settings.get('orgasm_duration_min', 15)
+            elif self.current_state == "post_orgasm_breathing":
+                clip_duration = 2.0  # Short clips for fast breathing
+            else:
+                clip_duration = base_clip_duration
+
+            # Generate phonetic text
+            phonetic_text = self.vocalization_generator.generate_streaming_phonetics(
+                current_state=self.current_state,
+                duration=clip_duration
+            )
+
+            # Generate audio with XTTS
+            audio_clip = self.xtts_engine.generate_short_clip(
+                text=phonetic_text,
+                language="en",
+                speed=1.0
+            )
+
+            if audio_clip is None:
+                print("ERROR: XTTS generation failed")
+                return
+
+            # Apply advanced prosody processing with REDUCED intensity
+            audio_clip = self.audio_processor.process_for_state(
+                audio_clip,
+                self.current_state,
+                self.prosody_settings.get_all()
+            )
+
+            # Apply volume
+            audio_clip = audio_clip * self.volume
+
+            # Aggressive normalization to prevent clipping
+            max_val = np.max(np.abs(audio_clip))
+            if max_val > 0.8:
+                audio_clip = audio_clip * (0.8 / max_val)
+
+            # Thread-safe assignment
+            with clip_lock:
+                next_clip = audio_clip
+
+        # Pre-generate first clip synchronously
+        print(f"[{self.current_state.upper()}] Pre-generating first clip...")
+        generate_next_clip_async()
+
+        with clip_lock:
+            if next_clip is None:
+                print("ERROR: Failed to generate initial clip")
+                return
+
+        while self.is_playing and not self.stop_event.is_set():
+            # Thread-safe get of pre-generated clip
+            with clip_lock:
+                current_clip = next_clip
+                next_clip = None
+
+            # Start generating next clip in background WHILE playing current clip
+            next_clip_generation_thread = Thread(target=generate_next_clip_async, daemon=True)
+            next_clip_generation_thread.start()
+
+            # Update waveform buffer for visualization
+            self.waveform_buffer = np.roll(self.waveform_buffer, -len(current_clip))
+            if len(current_clip) < len(self.waveform_buffer):
+                self.waveform_buffer[-len(current_clip):] = current_clip
+            else:
+                self.waveform_buffer = current_clip[-len(self.waveform_buffer):]
+
+            # If recording, add to recording buffer
+            if self.is_recording:
+                self.recording_buffer.append(current_clip.copy())
+
+            # RANDOMLY insert breathing before main clip (based on breathing_frequency setting)
+            breathing_freq = self.prosody_settings.get('breathing_frequency', 15)
+            current_time = time.time()
+
+            if (self.random_breathing_enabled and
+                breathing_freq > 0 and
+                random.random() < (breathing_freq / 100.0) and
+                current_time - self.last_breath_time > self.min_time_between_breaths):
+
+                # Generate short breathing clip
+                breath_phonetics = random.choice(['hh...', 'hah...', 'mmm...', 'hhh... hah...'])
+                print(f"[BREATHING] Inserting random breath: '{breath_phonetics}'")
+
+                breath_audio = self.xtts_engine.generate_short_clip(
+                    text=breath_phonetics,
+                    language="en",
+                    speed=1.2  # Slightly faster for breathing
+                )
+
+                if breath_audio is not None:
+                    # Apply high breathiness effect
+                    breath_audio = self.audio_processor.apply_breathiness(
+                        breath_audio,
+                        50  # High breathiness
+                    )
+
+                    # Apply volume and normalization
+                    breath_audio = breath_audio * self.volume * 0.8  # Slightly quieter than main audio
+                    max_val = np.max(np.abs(breath_audio))
+                    if max_val > 0.8:
+                        breath_audio = breath_audio * (0.8 / max_val)
+
+                    # Play breath before main clip
+                    self._play_audio_chunk(breath_audio)
+                    self.last_breath_time = current_time
+
+                    # Add to recording buffer if recording
+                    if self.is_recording:
+                        self.recording_buffer.append(breath_audio.copy())
+
+            # Play the current clip (while next one generates in background)
+            print(f"[{self.current_state.upper()}] Playing {len(current_clip)/self.sample_rate:.2f}s clip...")
+            self._play_audio_chunk(current_clip)
+
+            # Wait for next clip to finish generating
+            if next_clip_generation_thread:
+                next_clip_generation_thread.join()
+
+            # Thread-safe check if generation failed
+            with clip_lock:
+                if next_clip is None:
+                    print("WARNING: Background generation failed, generating synchronously...")
+                    # Release lock before generating
+
+            if next_clip is None:
+                generate_next_clip_async()
+                with clip_lock:
+                    if next_clip is None:
+                        print("ERROR: Could not generate audio, stopping...")
+                        break
+
+        # Cleanup
+        if self.stream:
+            self.stream.stop_stream()
+            self.stream.close()
+            self.stream = None
+
+        print("=== XTTS Streaming Stopped ===")
+
+    def _play_audio_chunk(self, audio_chunk):
+        """Play an audio chunk through PyAudio stream."""
+        try:
+            # Ensure correct format
+            audio_chunk = audio_chunk.astype(np.float32)
+
+            # Play chunk in small pieces to allow for interruption
+            chunk_size = CHUNK_SIZE
+            for i in range(0, len(audio_chunk), chunk_size):
+                if not self.is_playing or self.stop_event.is_set():
+                    break
+
+                piece = audio_chunk[i:i+chunk_size]
+                self.stream.write(piece.tobytes())
+
+        except Exception as e:
+            print(f"Error playing audio chunk: {e}")
 
     def _generate_from_synthesis(self, chunk_duration):
         """Generate audio chunk from synthesis."""
@@ -361,21 +610,44 @@ class AudioEngine:
         self.next_word_time = time.time() + delay
 
     def trigger_random_event(self):
-        """Trigger a random build-up and climax sequence."""
+        """Trigger a random build-up and orgasm sequence."""
         self.current_state = "building"
         self.state_start_time = time.time()
-        build_up_duration = random.uniform(MIN_BUILD_UP_DURATION, MAX_BUILD_UP_DURATION)
 
-        def trigger_climax():
+        # Get build-up duration from settings
+        build_up_min = self.prosody_settings.get('buildup_duration_min', 5)
+        build_up_max = self.prosody_settings.get('buildup_duration_max', 15)
+        build_up_duration = random.uniform(build_up_min, build_up_max)
+
+        print(f"[BUILD-UP TRIGGERED] Duration: {build_up_duration:.1f} seconds")
+
+        def trigger_orgasm():
             time.sleep(build_up_duration)
             if self.is_playing:
-                self.current_state = "climax"
+                self.current_state = "orgasm"
                 self.state_start_time = time.time()
-                time.sleep(CLIMAX_DURATION)
+
+                # Get orgasm duration from settings (extended: 15-30 seconds)
+                orgasm_min = self.prosody_settings.get('orgasm_duration_min', 15)
+                orgasm_max = self.prosody_settings.get('orgasm_duration_max', 30)
+                orgasm_duration = random.uniform(orgasm_min, orgasm_max)
+
+                print(f"[ORGASM TRIGGERED] Duration: {orgasm_duration:.1f} seconds")
+
+                time.sleep(orgasm_duration)
+
+                # 70% chance of post-orgasm fast breathing
+                if self.add_post_orgasm_breathing and random.random() < 0.7:
+                    self.current_state = "post_orgasm_breathing"
+                    breathing_duration = random.uniform(3, 6)  # 3-6 seconds of fast breathing
+                    print(f"[POST-ORGASM BREATHING] Duration: {breathing_duration:.1f} seconds")
+                    time.sleep(breathing_duration)
+
                 self.current_state = "normal"
+                print("[AUTO TRANSITION] Returned to normal state")
                 self.schedule_next_event()
 
-        Thread(target=trigger_climax, daemon=True).start()
+        Thread(target=trigger_orgasm, daemon=True).start()
 
     def trigger_build_up_manual(self):
         """Manually trigger a build-up."""
@@ -390,15 +662,24 @@ class AudioEngine:
 
             Thread(target=reset_to_normal, daemon=True).start()
 
-    def trigger_climax_manual(self):
-        """Manually trigger a climax."""
-        self.current_state = "climax"
+    def trigger_orgasm_manual(self):
+        """Manually trigger an orgasm."""
+        print("[MANUAL TRIGGER] Orgasm triggered!")
+        self.current_state = "orgasm"
         self.state_start_time = time.time()
 
+        # Get orgasm duration from settings (extended: 15-30 seconds)
+        orgasm_min = self.prosody_settings.get('orgasm_duration_min', 15)
+        orgasm_max = self.prosody_settings.get('orgasm_duration_max', 30)
+        orgasm_duration = random.uniform(orgasm_min, orgasm_max)
+
+        print(f"[MANUAL ORGASM] Duration: {orgasm_duration:.1f} seconds")
+
         def reset_to_normal():
-            time.sleep(CLIMAX_DURATION)
-            if self.current_state == "climax":
+            time.sleep(orgasm_duration)
+            if self.current_state == "orgasm":
                 self.current_state = "normal"
+                print("[AUTO TRANSITION] Returned to normal state")
 
         Thread(target=reset_to_normal, daemon=True).start()
 
@@ -510,17 +791,142 @@ class AudioEngine:
 
         # Generate filename with timestamp
         from datetime import datetime
+        import os
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"recording_{timestamp}.wav"
+
+        # Save to the app directory with absolute path
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        filename = os.path.join(app_dir, f"recording_{timestamp}.wav")
 
         # Save to file
         try:
             sf.write(filename, recording, self.sample_rate)
             print(f"Recording saved: {filename}")
+            print(f"Recording length: {len(recording)/self.sample_rate:.2f} seconds")
+            print(f"File size: {os.path.getsize(filename) / 1024:.2f} KB")
             return filename
         except Exception as e:
             print(f"Error saving recording: {e}")
+            import traceback
+            traceback.print_exc()
             return None
+
+    def generate_audio_from_prompt(self, prompt, duration):
+        """
+        Generate moaning audio using XTTS voice cloning and LLM-generated phonetics.
+
+        Args:
+            prompt: Text description of desired intensity/style
+            duration: Duration in seconds to generate
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            print(f"\n=== Generating TTS Audio with Voice Cloning ===")
+            print(f"Prompt: {prompt}")
+            print(f"Duration: {duration} seconds")
+
+            # Check if XTTS is ready
+            if not self.xtts_engine.is_available():
+                print("ERROR: XTTS not ready - please load a voice file first")
+                return False
+
+            # Parse prompt to determine intensity and progression
+            intensity, progression = self._parse_prompt_for_intensity(prompt)
+
+            # Generate phonetic vocalization text using LLM or templates
+            print(f"Generating phonetic text ({intensity}, {progression})...")
+            phonetic_text = self.vocalization_generator.generate_vocalization_text(
+                intensity=intensity,
+                duration_seconds=duration,
+                progression=progression
+            )
+
+            print(f"Phonetic text: '{phonetic_text[:100]}...'")
+
+            # Generate audio using XTTS with voice cloning
+            print("Synthesizing audio with XTTS v2...")
+            audio = self.xtts_engine.generate_audio(
+                text=phonetic_text,
+                language="en",
+                speed=1.0
+            )
+
+            if audio is None:
+                print("ERROR: XTTS generation failed")
+                return False
+
+            # Store the generated audio
+            self.last_generated_audio = audio
+
+            # Apply volume
+            self.last_generated_audio *= self.volume
+
+            # Normalize to prevent clipping
+            max_val = np.max(np.abs(self.last_generated_audio))
+            if max_val > 0.95:
+                self.last_generated_audio = self.last_generated_audio * (0.95 / max_val)
+
+            print(f"✓ Generated {len(self.last_generated_audio) / self.sample_rate:.2f} seconds of audio")
+            return True
+
+        except Exception as e:
+            print(f"Error generating audio: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _parse_prompt_for_intensity(self, prompt):
+        """
+        Parse user prompt to determine intensity and progression.
+
+        Returns:
+            tuple: (intensity, progression)
+        """
+        prompt_lower = prompt.lower()
+
+        # Determine intensity
+        if any(word in prompt_lower for word in ['soft', 'gentle', 'quiet', 'subtle', 'whisper']):
+            intensity = 'soft'
+        elif any(word in prompt_lower for word in ['intense', 'strong', 'powerful', 'passionate', 'loud', 'extreme']):
+            intensity = 'intense'
+        else:
+            intensity = 'moderate'
+
+        # Determine progression
+        if any(word in prompt_lower for word in ['building', 'growing', 'increasing', 'escalating', 'gradual']):
+            progression = 'building'
+        elif any(word in prompt_lower for word in ['climax', 'peak', 'maximum', 'apex', 'culminat']):
+            progression = 'climaxing'
+        else:
+            progression = 'steady'
+
+        return intensity, progression
+
+    def export_generated_audio(self, file_path):
+        """
+        Export the last generated audio to a WAV file.
+
+        Args:
+            file_path: Path where to save the WAV file
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if self.last_generated_audio is None:
+            print("No audio to export - generate audio first")
+            return False
+
+        try:
+            sf.write(file_path, self.last_generated_audio, self.sample_rate)
+            print(f"Audio exported to: {file_path}")
+            return True
+        except Exception as e:
+            print(f"Error exporting audio: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     def cleanup(self):
         """Clean up resources."""
@@ -530,4 +936,6 @@ class AudioEngine:
                 self.tts_engine.stop()
             except:
                 pass
+        if self.xtts_engine:
+            self.xtts_engine.cleanup()
         self.p.terminate()

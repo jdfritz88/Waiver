@@ -31,13 +31,37 @@ class AudioStreamUI:
 
     def _create_ui(self):
         """Create all UI elements."""
-        # Main container with padding
-        main_frame = ttk.Frame(self.root, padding="10")
-        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-
-        # Configure grid weights for responsive layout
+        # Configure root grid
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
+
+        # Create canvas with scrollbar
+        canvas = tk.Canvas(self.root, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=canvas.yview)
+
+        # Scrollable frame inside canvas
+        scrollable_frame = ttk.Frame(canvas, padding="10")
+
+        # Configure canvas scrolling
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Grid layout for canvas and scrollbar
+        canvas.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
+        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+
+        # Enable mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Main content frame (was main_frame, now scrollable_frame)
+        main_frame = scrollable_frame
         main_frame.columnconfigure(0, weight=1)
 
         # Title
@@ -80,16 +104,37 @@ class AudioStreamUI:
         )
         self.clear_btn.grid(row=0, column=1, padx=(5, 0), sticky=(tk.W, tk.E))
 
+        # Current State Indicator
+        state_frame = ttk.LabelFrame(main_frame, text="Current State", padding="10")
+        state_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+
+        self.state_label = ttk.Label(
+            state_frame,
+            text="NORMAL",
+            font=("Arial", 16, "bold"),
+            foreground="green"
+        )
+        self.state_label.pack()
+
+        # Status bar (moved above waveform)
+        self.status_label = ttk.Label(
+            main_frame,
+            text="Ready - Load a voice file to start streaming",
+            relief=tk.SUNKEN,
+            anchor=tk.W
+        )
+        self.status_label.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+
         # Waveform visualization
         waveform_frame = ttk.LabelFrame(main_frame, text="Waveform", padding="10")
-        waveform_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
-        main_frame.rowconfigure(2, weight=1)
+        waveform_frame.grid(row=4, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        main_frame.rowconfigure(4, weight=1)
 
         self._create_waveform_plot(waveform_frame)
 
-        # Audio controls section
-        controls_frame = ttk.LabelFrame(main_frame, text="Audio Controls", padding="10")
-        controls_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        # Audio controls section (simplified - just volume)
+        controls_frame = ttk.LabelFrame(main_frame, text="Volume Control", padding="10")
+        controls_frame.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         controls_frame.columnconfigure(1, weight=1)
 
         # Volume slider
@@ -104,122 +149,210 @@ class AudioStreamUI:
         self.volume_value = ttk.Label(controls_frame, text="100%")
         self.volume_value.grid(row=0, column=2, padx=(10, 0), pady=5)
 
-        # Pitch slider
-        ttk.Label(controls_frame, text="Pitch:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.pitch_slider = ttk.Scale(
-            controls_frame,
-            from_=PITCH_RANGE[0],
-            to=PITCH_RANGE[1],
-            orient=tk.HORIZONTAL
-        )
-        self.pitch_slider.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=5)
-        self.pitch_value = ttk.Label(controls_frame, text="0 st")
-        self.pitch_value.grid(row=1, column=2, padx=(10, 0), pady=5)
-
-        # Octave slider
-        ttk.Label(controls_frame, text="Octave:").grid(row=2, column=0, sticky=tk.W, pady=5)
-        self.octave_slider = ttk.Scale(
-            controls_frame,
-            from_=OCTAVE_RANGE[0],
-            to=OCTAVE_RANGE[1],
-            orient=tk.HORIZONTAL
-        )
-        self.octave_slider.grid(row=2, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=5)
-        self.octave_value = ttk.Label(controls_frame, text="0")
-        self.octave_value.grid(row=2, column=2, padx=(10, 0), pady=5)
-
-        # Word frequency slider
-        ttk.Label(controls_frame, text="Words:").grid(row=3, column=0, sticky=tk.W, pady=5)
-        self.word_freq_slider = ttk.Scale(
-            controls_frame,
-            from_=0.0,
-            to=1.0,
-            orient=tk.HORIZONTAL
-        )
-        self.word_freq_slider.grid(row=3, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=5)
-        self.word_freq_value = ttk.Label(controls_frame, text="30%")
-        self.word_freq_value.grid(row=3, column=2, padx=(10, 0), pady=5)
-
-        # Mistral cache duration slider
-        ttk.Label(controls_frame, text="AI Cache:").grid(row=4, column=0, sticky=tk.W, pady=5)
-        self.cache_slider = ttk.Scale(
-            controls_frame,
-            from_=10.0,
-            to=60.0,
-            orient=tk.HORIZONTAL
-        )
-        self.cache_slider.grid(row=4, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=5)
-        self.cache_value = ttk.Label(controls_frame, text="60s")
-        self.cache_value.grid(row=4, column=2, padx=(10, 0), pady=5)
-
-        # Now configure slider commands and set initial values
+        # Configure slider and set initial value
         self.volume_slider.config(command=self._on_volume_change)
         self.volume_slider.set(1.0)
 
-        self.pitch_slider.config(command=self._on_pitch_change)
-        self.pitch_slider.set(0.0)
+        # Prosody Controls section
+        prosody_frame = ttk.LabelFrame(main_frame, text="Prosody Controls (Emotional Expression)", padding="10")
+        prosody_frame.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        prosody_frame.columnconfigure(1, weight=1)
 
-        self.octave_slider.config(command=self._on_octave_change)
-        self.octave_slider.set(0)
+        # Create sliders for all 7 prosody controls
+        self.prosody_sliders = {}
+        self.prosody_labels = {}
+        self.prosody_waveforms = {}
 
-        self.word_freq_slider.config(command=self._on_word_freq_change)
-        self.word_freq_slider.set(0.3)
+        prosody_controls = [
+            ('pitch_variation', 'Pitch Variation', 0, 100, '%'),
+            ('tempo', 'Tempo/Speed', 50, 200, '%'),
+            ('pauses', 'Breath Pauses', 0, 100, '%'),
+            ('breathiness', 'Breathiness', 0, 100, '%'),
+            ('roughness', 'Roughness', 0, 100, '%'),
+            ('emphasis', 'Emphasis/Stress', 0, 100, '%'),
+        ]
 
-        self.cache_slider.config(command=self._on_cache_change)
-        self.cache_slider.set(60.0)
+        # Each control takes 2 rows: one for slider, one for mini waveform
+        for control_idx, (key, label, min_val, max_val, unit) in enumerate(prosody_controls):
+            row_idx = control_idx * 2  # Each control uses 2 rows
 
-        # Playback controls
-        playback_frame = ttk.LabelFrame(main_frame, text="Playback", padding="10")
-        playback_frame.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-        playback_frame.columnconfigure(0, weight=1)
-        playback_frame.columnconfigure(1, weight=1)
+            # Label
+            ttk.Label(prosody_frame, text=f"{label}:").grid(row=row_idx, column=0, sticky=tk.W, pady=(3, 0))
+
+            # Slider
+            slider = ttk.Scale(
+                prosody_frame,
+                from_=min_val,
+                to=max_val,
+                orient=tk.HORIZONTAL,
+                command=lambda val, k=key: self._on_prosody_change(k, val)
+            )
+            slider.grid(row=row_idx, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=(3, 0))
+
+            # Value label
+            value_label = ttk.Label(prosody_frame, text=f"{min_val}{unit}")
+            value_label.grid(row=row_idx, column=2, padx=(10, 0), pady=(3, 0))
+
+            # Store references
+            self.prosody_sliders[key] = slider
+            self.prosody_labels[key] = value_label
+
+            # Set initial value from settings
+            initial_value = self.audio_engine.prosody_settings.get(key, min_val)
+            slider.set(initial_value)
+            value_label.config(text=f"{int(initial_value)}{unit}")
+
+            # Mini waveform visualization beneath slider
+            waveform_fig = Figure(figsize=(4, 0.5), dpi=80)
+            waveform_ax = waveform_fig.add_subplot(111)
+            waveform_ax.set_ylim(-1, 1)
+            waveform_ax.set_xlim(0, 100)
+            waveform_ax.axis('off')  # Hide axes for cleaner look
+            waveform_fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
+            # Initialize with flat line
+            waveform_line, = waveform_ax.plot([], [], linewidth=1.0, color='blue')
+
+            # Embed in tkinter
+            waveform_canvas = FigureCanvasTkAgg(waveform_fig, master=prosody_frame)
+            waveform_canvas.draw()
+            waveform_canvas.get_tk_widget().grid(
+                row=row_idx + 1,
+                column=1,
+                sticky=(tk.W, tk.E),
+                padx=(10, 0),
+                pady=(0, 5)
+            )
+
+            # Store references for updates
+            self.prosody_waveforms[key] = {
+                'fig': waveform_fig,
+                'ax': waveform_ax,
+                'line': waveform_line,
+                'canvas': waveform_canvas
+            }
+
+        # Add reset and save buttons (after all sliders and waveforms)
+        button_row = len(prosody_controls) * 2  # Each control uses 2 rows
+        reset_btn = ttk.Button(
+            prosody_frame,
+            text="Reset to Defaults",
+            command=self._reset_prosody_settings
+        )
+        reset_btn.grid(row=button_row, column=0, pady=(10, 0), sticky=tk.W)
+
+        save_btn = ttk.Button(
+            prosody_frame,
+            text="Save Settings",
+            command=self._save_prosody_settings
+        )
+        save_btn.grid(row=button_row, column=1, pady=(10, 0), padx=(10, 0), sticky=tk.W)
+
+        # Start updating prosody waveforms
+        self._update_prosody_waveforms()
+
+        # Pitch Processing Method section
+        pitch_method_frame = ttk.LabelFrame(main_frame, text="Pitch Processing Method", padding="10")
+        pitch_method_frame.grid(row=7, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        pitch_method_frame.columnconfigure(0, weight=1)
+
+        info_text = "Select the pitch processing algorithm (can be changed in real-time during streaming)"
+        info_label = ttk.Label(pitch_method_frame, text=info_text, font=("Arial", 8), foreground="gray")
+        info_label.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+
+        self.pitch_method_var = tk.StringVar(value='hybrid')
+
+        pitch_methods = [
+            ('hybrid', 'Hybrid (Recommended) - No pitch shift during orgasm, prevents distortion'),
+            ('rubberband', 'Rubberband - Formant-preserving (requires pyrubberband + binary)'),
+            ('pyworld', 'WORLD Vocoder - Professional quality resynthesis (requires pyworld)'),
+            ('lower_then_shift', 'Lower-First Method - Generate lower, shift upward')
+        ]
+
+        for idx, (value, label) in enumerate(pitch_methods):
+            rb = ttk.Radiobutton(
+                pitch_method_frame,
+                text=label,
+                variable=self.pitch_method_var,
+                value=value,
+                command=self._update_pitch_method
+            )
+            rb.grid(row=idx + 1, column=0, sticky=tk.W, pady=2)
+
+        # Breathing Frequency section
+        breathing_frame = ttk.LabelFrame(main_frame, text="Random Breathing Control", padding="10")
+        breathing_frame.grid(row=8, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        breathing_frame.columnconfigure(1, weight=1)
+
+        info_text = "Control how often random breathing occurs between audio clips (0% = never, 100% = always)"
+        info_label = ttk.Label(breathing_frame, text=info_text, font=("Arial", 8), foreground="gray")
+        info_label.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 5))
+
+        ttk.Label(breathing_frame, text="Breathing Frequency:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.breathing_slider = ttk.Scale(
+            breathing_frame,
+            from_=0,
+            to=100,
+            orient=tk.HORIZONTAL,
+            command=self._on_breathing_change
+        )
+        self.breathing_slider.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=5)
+        self.breathing_value = ttk.Label(breathing_frame, text="3%")
+        self.breathing_value.grid(row=1, column=2, padx=(10, 0), pady=5)
+
+        # Set initial value (updated from 15% to 3% based on reference audio analysis)
+        initial_breathing = self.audio_engine.prosody_settings.get('breathing_frequency', 3)
+        self.breathing_slider.set(initial_breathing)
+        self.breathing_value.config(text=f"{int(initial_breathing)}%")
+
+        # Streaming control
+        streaming_frame = ttk.LabelFrame(main_frame, text="Streaming Control", padding="10")
+        streaming_frame.grid(row=9, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        streaming_frame.columnconfigure(0, weight=1)
 
         self.start_btn = ttk.Button(
-            playback_frame,
-            text="Start Stream",
+            streaming_frame,
+            text="▶ Start Streaming",
             command=self._toggle_stream
         )
-        self.start_btn.grid(row=0, column=0, padx=(0, 5), sticky=(tk.W, tk.E))
+        self.start_btn.pack(fill=tk.X, pady=5)
 
         # Manual triggers
-        trigger_frame = ttk.LabelFrame(main_frame, text="Manual Triggers", padding="10")
-        trigger_frame.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        trigger_frame = ttk.LabelFrame(main_frame, text="Manual State Triggers", padding="10")
+        trigger_frame.grid(row=10, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         trigger_frame.columnconfigure(0, weight=1)
         trigger_frame.columnconfigure(1, weight=1)
         trigger_frame.columnconfigure(2, weight=1)
 
         self.buildup_btn = ttk.Button(
             trigger_frame,
-            text="Trigger Build-up",
+            text="📈 Trigger Build-up",
             command=self._trigger_buildup,
             state=tk.DISABLED
         )
         self.buildup_btn.grid(row=0, column=0, padx=(0, 5), sticky=(tk.W, tk.E))
 
-        self.climax_btn = ttk.Button(
+        self.orgasm_btn = ttk.Button(
             trigger_frame,
-            text="Trigger Climax",
-            command=self._trigger_climax,
+            text="💥 Trigger Orgasm",
+            command=self._trigger_orgasm,
             state=tk.DISABLED
         )
-        self.climax_btn.grid(row=0, column=1, padx=(5, 5), sticky=(tk.W, tk.E))
+        self.orgasm_btn.grid(row=0, column=1, padx=(5, 5), sticky=(tk.W, tk.E))
 
         self.record_btn = ttk.Button(
             trigger_frame,
-            text="Record 5 Sec",
+            text="⏺ Record 20 Sec",
             command=self._record_audio,
             state=tk.DISABLED
         )
         self.record_btn.grid(row=0, column=2, padx=(5, 0), sticky=(tk.W, tk.E))
 
-        # Status bar
-        self.status_label = ttk.Label(
-            main_frame,
-            text="Ready - Load a voice profile or use default voice",
-            relief=tk.SUNKEN,
-            anchor=tk.W
-        )
-        self.status_label.grid(row=6, column=0, sticky=(tk.W, tk.E))
+        # Start state update timer
+        self._update_state_indicator()
+
+        # Auto-load last voice file after UI is initialized
+        self.root.after(100, self._auto_load_voice_file)
 
     def _create_waveform_plot(self, parent):
         """Create the matplotlib waveform visualization."""
@@ -254,6 +387,16 @@ class AudioStreamUI:
                 self.ax.set_ylim(-max_val * 1.1, max_val * 1.1)
 
             self.canvas.draw()
+
+    def _auto_load_voice_file(self):
+        """Automatically load the last voice file if it exists."""
+        success, file_path = self.audio_engine.auto_load_last_voice_file()
+        if success and file_path:
+            # Update status
+            file_name = file_path.split('/')[-1].split('\\')[-1]
+            self.status_label.config(text=f"✓ Auto-loaded voice file: {file_name}")
+            self.file_label.config(text=f"Loaded: {file_name}")
+            print(f"Auto-loaded voice file: {file_path}")
 
     def _select_file(self):
         """Handle voice file selection and analysis."""
@@ -302,70 +445,157 @@ class AudioStreamUI:
         self.audio_engine.volume = volume
         self.volume_value.config(text=f"{int(volume * 100)}%")
 
-    def _on_pitch_change(self, value):
-        """Handle pitch slider change."""
-        pitch = float(value)
-        self.audio_engine.pitch_shift = pitch
-        self.pitch_value.config(text=f"{pitch:.1f} st")
+    def _on_prosody_change(self, key, value):
+        """Handle prosody slider change."""
+        float_value = float(value)
+        # Update the engine's prosody settings
+        self.audio_engine.prosody_settings.set_validated(key, float_value)
+        # Update the label
+        self.prosody_labels[key].config(text=f"{int(float_value)}%")
 
-    def _on_octave_change(self, value):
-        """Handle octave slider change."""
-        octave = int(float(value))
-        self.audio_engine.octave_shift = octave
-        self.octave_value.config(text=f"{octave:+d}")
+    def _update_pitch_method(self):
+        """Handle pitch method radio button change."""
+        method = self.pitch_method_var.get()
+        self.audio_engine.audio_processor.set_pitch_method(method)
+        self.status_label.config(text=f"✓ Pitch method changed to: {method}")
+        print(f"Pitch processing method changed to: {method}")
 
-    def _on_word_freq_change(self, value):
-        """Handle word frequency slider change."""
-        freq = float(value)
-        self.audio_engine.word_frequency = freq
-        if freq < 0.01:
-            self.word_freq_value.config(text="Off")
-        else:
-            self.word_freq_value.config(text=f"{int(freq * 100)}%")
+    def _on_breathing_change(self, value):
+        """Handle breathing frequency slider change."""
+        int_value = int(float(value))
+        self.audio_engine.prosody_settings.set('breathing_frequency', int_value)
+        self.breathing_value.config(text=f"{int_value}%")
+        print(f"Breathing frequency changed to: {int_value}%")
 
-    def _on_cache_change(self, value):
-        """Handle Mistral cache duration slider change."""
-        duration = float(value)
-        self.audio_engine.mistral_cache_duration = duration
-        self.cache_value.config(text=f"{int(duration)}s")
+    def _save_prosody_settings(self):
+        """Save current prosody settings to JSON."""
+        self.audio_engine.prosody_settings.save()
+        self.status_label.config(text="✓ Prosody settings saved!")
+
+    def _reset_prosody_settings(self):
+        """Reset prosody settings to defaults."""
+        self.audio_engine.prosody_settings.reset_to_defaults()
+        # Update UI sliders
+        for key, slider in self.prosody_sliders.items():
+            value = self.audio_engine.prosody_settings.get(key)
+            slider.set(value)
+            self.prosody_labels[key].config(text=f"{int(value)}%")
+        self.status_label.config(text="✓ Prosody settings reset to defaults")
+
+    def _update_prosody_waveforms(self):
+        """Update mini waveform visualizations for prosody controls."""
+        if not hasattr(self, 'prosody_waveforms'):
+            return
+
+        # Generate example waveforms based on current settings
+        x = np.linspace(0, 100, 200)
+
+        for key, waveform_data in self.prosody_waveforms.items():
+            value = self.audio_engine.prosody_settings.get(key, 0)
+
+            # Generate waveform based on control type
+            if key == 'pitch_variation':
+                # Show pitch variation as sine wave with varying amplitude
+                amplitude = value / 100.0
+                y = amplitude * np.sin(x / 5) * np.sin(x / 2)
+            elif key == 'tempo':
+                # Show tempo as frequency of oscillation
+                freq = (value / 100.0) * 3  # 50-200% maps to different frequencies
+                y = 0.5 * np.sin(x * freq / 5)
+            elif key == 'pauses':
+                # Show pauses as gaps in waveform
+                y = np.sin(x / 5)
+                if value > 30:
+                    # Add gaps
+                    y[40:50] = 0
+                    y[80:90] = 0
+            elif key == 'breathiness':
+                # Show breathiness as noisy signal
+                noise_amount = value / 100.0
+                y = 0.5 * np.sin(x / 5) + noise_amount * np.random.normal(0, 0.2, len(x))
+            elif key == 'roughness':
+                # Show roughness as distorted wave
+                rough_amount = value / 100.0
+                y = np.tanh(2 * np.sin(x / 5) * (1 + rough_amount))
+            elif key == 'emphasis':
+                # Show emphasis as amplitude spikes
+                y = np.sin(x / 5)
+                emphasis_amount = value / 100.0
+                y[50:60] *= (1 + emphasis_amount)
+            else:
+                y = np.sin(x / 5)
+
+            # Update the plot
+            waveform_data['line'].set_data(x, y)
+            waveform_data['canvas'].draw()
+
+        # Schedule next update
+        self.root.after(500, self._update_prosody_waveforms)
+
+    def _update_state_indicator(self):
+        """Update the state indicator label."""
+        if self.is_streaming:
+            current_state = self.audio_engine.current_state.upper()
+            self.state_label.config(text=current_state)
+
+            # Update color based on state
+            if current_state == "NORMAL":
+                self.state_label.config(foreground="green")
+            elif current_state == "BUILDING":
+                self.state_label.config(foreground="orange")
+            elif current_state == "ORGASM":
+                self.state_label.config(foreground="red")
+
+        # Schedule next update
+        self.root.after(200, self._update_state_indicator)
 
     def _toggle_stream(self):
         """Toggle streaming on/off."""
         if not self.is_streaming:
+            # Check if voice file is loaded
+            if not self.audio_engine.xtts_engine.is_available():
+                messagebox.showerror(
+                    "No Voice Loaded",
+                    "Please load a voice file first for XTTS voice cloning.\n\n"
+                    "Click 'Load Voice from WAV' and select a voice sample."
+                )
+                return
+
             if self.audio_engine.start_playback():
                 self.is_streaming = True
-                self.start_btn.config(text="Stop Stream")
+                self.start_btn.config(text="⏹ Stop Streaming")
                 self.buildup_btn.config(state=tk.NORMAL)
-                self.climax_btn.config(state=tk.NORMAL)
+                self.orgasm_btn.config(state=tk.NORMAL)
                 self.record_btn.config(state=tk.NORMAL)
-                self.status_label.config(text="Generating audio stream...")
+                self.status_label.config(text="🔴 Streaming with XTTS voice cloning...")
                 self._start_waveform_updates()  # Start updating waveform
             else:
-                messagebox.showerror("Error", "Failed to start audio generation")
+                messagebox.showerror("Error", "Failed to start XTTS streaming")
         else:
             self.audio_engine.stop_playback()
             self.is_streaming = False
-            self.start_btn.config(text="Start Stream")
+            self.start_btn.config(text="▶ Start Streaming")
             self.buildup_btn.config(state=tk.DISABLED)
-            self.climax_btn.config(state=tk.DISABLED)
+            self.orgasm_btn.config(state=tk.DISABLED)
             self.record_btn.config(state=tk.DISABLED)
             self.status_label.config(text="Stopped")
+            self.state_label.config(text="STOPPED", foreground="gray")
 
     def _trigger_buildup(self):
         """Trigger manual build-up."""
         self.audio_engine.trigger_build_up_manual()
-        self.status_label.config(text="Build-up triggered")
+        self.status_label.config(text="📈 Build-up triggered manually")
 
-    def _trigger_climax(self):
-        """Trigger manual climax."""
-        self.audio_engine.trigger_climax_manual()
-        self.status_label.config(text="Climax triggered")
+    def _trigger_orgasm(self):
+        """Trigger manual orgasm."""
+        self.audio_engine.trigger_orgasm_manual()
+        self.status_label.config(text="💥 Orgasm triggered manually")
 
     def _record_audio(self):
-        """Record 5 seconds of audio."""
+        """Record 20 seconds of audio."""
         if self.audio_engine.start_recording():
             self.record_btn.config(state=tk.DISABLED, text="Recording...")
-            self.status_label.config(text="Recording 5 seconds...")
+            self.status_label.config(text="Recording 20 seconds...")
 
             # Re-enable button after recording completes
             def enable_button():
@@ -376,9 +606,9 @@ class AudioStreamUI:
 
     def _recording_complete(self):
         """Called when recording is complete."""
-        self.record_btn.config(state=tk.NORMAL, text="Record 5 Sec")
-        self.status_label.config(text="Recording saved!")
-        messagebox.showinfo("Recording Saved", "5 second audio clip saved to file!")
+        self.record_btn.config(state=tk.NORMAL, text="⏺ Record 20 Sec")
+        self.status_label.config(text="✓ Recording saved!")
+        messagebox.showinfo("Recording Saved", "20 second audio clip saved to file!")
 
     def run(self):
         """Start the UI main loop."""
